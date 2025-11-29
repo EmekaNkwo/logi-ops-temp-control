@@ -1,0 +1,21 @@
+{
+  "name": "logi-ops-temp-control",
+  "version": "1.0.0",
+  "description": "Digital freight marketplace for temperature-controlled food shipping",
+  "scripts": {
+    "dev": "concurrently \"pnpm run dev:frontend\" \"pnpm run dev:backend\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && pnpm run dev",
+    "build": "pnpm run build:frontend && pnpm run build:backend",
+    "build:frontend": "cd frontend && pnpm run build",
+    "build:backend": "cd backend && npm run build",
+    "install:all": "pnpm install && cd frontend && pnpm install && cd ../backend && pnpm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "workspaces": [
+    "frontend",
+    "backend"
+  ]
+}
