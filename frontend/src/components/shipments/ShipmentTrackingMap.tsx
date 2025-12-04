@@ -1,29 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import dynamic from "next/dynamic";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Polyline,
+  useMap,
+} from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import type { Location, IoTData } from "../../../../shared/types";
 
-// Dynamically import Leaflet to avoid SSR issues
-const MapContainer = dynamic(
-  () => import("react-leaflet").then((mod) => mod.MapContainer),
-  { ssr: false }
-);
-const TileLayer = dynamic(
-  () => import("react-leaflet").then((mod) => mod.TileLayer),
-  { ssr: false }
-);
-const Marker = dynamic(
-  () => import("react-leaflet").then((mod) => mod.Marker),
-  { ssr: false }
-);
-const Popup = dynamic(() => import("react-leaflet").then((mod) => mod.Popup), {
-  ssr: false,
+// Fix default Leaflet icons for Next.js
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl:
+    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
+  iconUrl:
+    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+  shadowUrl:
+    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
 });
-const Polyline = dynamic(
-  () => import("react-leaflet").then((mod) => mod.Polyline),
-  { ssr: false }
-);
 
 interface ShipmentTrackingMapProps {
   origin: Location;
@@ -32,91 +31,212 @@ interface ShipmentTrackingMapProps {
   iotData: IoTData[];
 }
 
+// Component to capture map instance for cleanup
+function MapInstanceCapture({
+  onMapCreated,
+}: {
+  onMapCreated: (map: L.Map) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    onMapCreated(map);
+  }, [map, onMapCreated]);
+  return null;
+}
+
 export default function ShipmentTrackingMap({
   origin,
   destination,
   currentLocation,
   iotData,
 }: ShipmentTrackingMapProps) {
-  const [isClient, setIsClient] = useState(false);
-  const mapInitialized = useRef(false);
-
-  // Create a unique key based on all props that should trigger map reinitialization
-  const mapKey = useRef(0);
-
-  useEffect(() => {
-    mapKey.current += 1; // Increment key whenever props change
-  }, [origin, destination, currentLocation, iotData.length]);
+  const [mounted, setMounted] = useState(false);
+  const [selected, setSelected] = useState<{
+    location: Location;
+    label: string;
+    temperature?: number;
+  } | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
 
   useEffect(() => {
-    setIsClient(true);
-    // Import Leaflet CSS dynamically
-    if (typeof window !== "undefined") {
-      import("leaflet/dist/leaflet.css").catch(() => {
-        // CSS import may fail in some environments, that's okay
-      });
-    }
-
+    setMounted(true);
     return () => {
-      // Reset initialization flag when component unmounts
-      mapInitialized.current = false;
+      // Cleanup: remove map instance when component unmounts
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
     };
   }, []);
 
-  const route =
-    iotData.length > 0
-      ? iotData.map(
-          (data) => [data.location.lat, data.location.lng] as [number, number]
-        )
-      : [
-          [origin.lat, origin.lng] as [number, number],
-          [destination.lat, destination.lng] as [number, number],
-        ];
+  // Handle map creation
+  const handleMapCreated = useCallback((map: L.Map) => {
+    // Clean up previous map instance if it exists
+    if (mapRef.current && mapRef.current !== map) {
+      mapRef.current.remove();
+    }
+    mapRef.current = map;
+  }, []);
 
-  const center = currentLocation
-    ? [currentLocation.lat, currentLocation.lng]
-    : [(origin.lat + destination.lat) / 2, (origin.lng + destination.lng) / 2];
+  const isValid = (n: number) => typeof n === "number" && !isNaN(n);
 
-  if (!isClient || typeof window === "undefined") {
+  const center = useMemo(() => {
+    if (
+      currentLocation &&
+      isValid(currentLocation.lat) &&
+      isValid(currentLocation.lng)
+    ) {
+      return [currentLocation.lat, currentLocation.lng];
+    }
+
+    if (
+      isValid(origin.lat) &&
+      isValid(origin.lng) &&
+      isValid(destination.lat) &&
+      isValid(destination.lng)
+    ) {
+      return [
+        (origin.lat + destination.lat) / 2,
+        (origin.lng + destination.lng) / 2,
+      ];
+    }
+
+    return [39.8283, -98.5795]; // fallback
+  }, [origin, destination, currentLocation]);
+
+  const route = useMemo(() => {
+    if (iotData.length > 0) {
+      return iotData
+        .map((d) => [d.location.lat, d.location.lng])
+        .filter(([lat, lng]) => isValid(lat) && isValid(lng));
+    }
+    return [
+      [origin.lat, origin.lng],
+      [destination.lat, destination.lng],
+    ].filter(([lat, lng]) => isValid(lat) && isValid(lng));
+  }, [iotData, origin, destination]);
+
+  const makeIcon = (color: string) =>
+    L.divIcon({
+      className: "custom-marker",
+      html: `<div style="width:20px;height:20px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,.3)"></div>`,
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+    });
+
+  // Create a stable key for the map container to force remounting when props change
+  const mapKey = useMemo(
+    () =>
+      `${origin.lat}-${origin.lng}-${destination.lat}-${destination.lng}-${currentLocation?.lat}-${currentLocation?.lng}`,
+    [origin, destination, currentLocation]
+  );
+
+  if (
+    !isValid(origin.lat) ||
+    !isValid(origin.lng) ||
+    !isValid(destination.lat) ||
+    !isValid(destination.lng)
+  ) {
     return (
-      <div className="w-full h-96 bg-gray-200 rounded-lg flex items-center justify-center">
-        Loading map...
+      <div className="w-full h-96 flex items-center justify-center bg-gray-100 rounded-lg">
+        <p className="text-gray-500">Invalid location coordinates</p>
+      </div>
+    );
+  }
+
+  if (!mounted) {
+    return (
+      <div className="w-full h-96 flex items-center justify-center bg-gray-100 rounded-lg">
+        <p className="text-gray-500">Loading map…</p>
       </div>
     );
   }
 
   return (
-    <div className="w-full h-96 rounded-lg overflow-hidden">
+    <div className="w-full h-96 min-h-96 rounded-lg overflow-hidden relative">
       <MapContainer
-        key={`map-${mapKey.current}`} // Use the computed key to force reinitialization when props change
-        center={center as [number, number]}
+        key={mapKey}
+        center={center as any}
         zoom={6}
-        style={{ height: "100%", width: "100%" }}
+        style={{ width: "100%", height: "100%" }}
       >
+        <MapInstanceCapture onMapCreated={handleMapCreated} />
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          attribution="&copy; OpenStreetMap contributors"
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <Marker position={[origin.lat, origin.lng]}>
-          <Popup>
-            Origin: {origin.city}, {origin.state}
-          </Popup>
-        </Marker>
-        <Marker position={[destination.lat, destination.lng]}>
-          <Popup>
-            Destination: {destination.city}, {destination.state}
-          </Popup>
-        </Marker>
-        {currentLocation && (
-          <Marker position={[currentLocation.lat, currentLocation.lng]}>
+
+        {route.length >= 2 && (
+          <Polyline
+            positions={route as any}
+            pathOptions={{ color: "#3b82f6", weight: 3, opacity: 0.8 }}
+          />
+        )}
+
+        {/* Origin */}
+        <Marker
+          position={[origin.lat, origin.lng]}
+          icon={makeIcon("#10b981")}
+          eventHandlers={{
+            click: () =>
+              setSelected({
+                location: origin,
+                label: `Origin: ${origin.city}, ${origin.state}`,
+              }),
+          }}
+        >
+          {selected?.location === origin && (
             <Popup>
-              Current Location
-              <br />
-              Temp: {iotData[iotData.length - 1]?.temperature.toFixed(1)}°C
+              <div className="font-semibold">{selected.label}</div>
             </Popup>
+          )}
+        </Marker>
+
+        {/* Destination */}
+        <Marker
+          position={[destination.lat, destination.lng]}
+          icon={makeIcon("#ef4444")}
+          eventHandlers={{
+            click: () =>
+              setSelected({
+                location: destination,
+                label: `Destination: ${destination.city}, ${destination.state}`,
+              }),
+          }}
+        >
+          {selected?.location === destination && (
+            <Popup>
+              <div className="font-semibold">{selected.label}</div>
+            </Popup>
+          )}
+        </Marker>
+
+        {/* Current */}
+        {currentLocation && (
+          <Marker
+            position={[currentLocation.lat, currentLocation.lng]}
+            icon={makeIcon("#3b82f6")}
+            eventHandlers={{
+              click: () =>
+                setSelected({
+                  location: currentLocation,
+                  label: "Current Location",
+                  temperature: iotData[iotData.length - 1]?.temperature,
+                }),
+            }}
+          >
+            {selected?.location === currentLocation && (
+              <Popup>
+                <div className="font-semibold">{selected.label}</div>
+                {selected.temperature !== undefined && (
+                  <div className="text-sm text-gray-600">
+                    Temp: {selected.temperature.toFixed(1)}°C
+                  </div>
+                )}
+              </Popup>
+            )}
           </Marker>
         )}
-        <Polyline positions={route} color="blue" />
       </MapContainer>
     </div>
   );

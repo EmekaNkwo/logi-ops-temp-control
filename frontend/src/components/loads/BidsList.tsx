@@ -10,7 +10,7 @@ import {
   CheckCircleIcon,
   XCircleIcon,
   ClockIcon,
-} from "@heroicons/react/24/outline";
+} from "@heroicons/react/24/solid";
 import type { Load } from "../../../../shared/types";
 
 interface BidsListProps {
